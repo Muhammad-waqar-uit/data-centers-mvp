@@ -13,7 +13,7 @@ No Docker needed. Uses Supabase for the database (or local PostgreSQL) and Anvil
 5. [Backend — Run & Test](#5-backend--run--test)
 6. [Frontend — Run & Preview UI](#6-frontend--run--preview-ui)
 7. [End-to-End Testing Flow](#7-end-to-end-testing-flow)
-8. [Deploy to Testnet (Base Sepolia)](#8-deploy-to-testnet-base-sepolia)
+8. [Deploy to Testnet (Ethereum Sepolia)](#8-deploy-to-testnet-ethereum-sepolia)
 9. [Environment Variable Reference](#9-environment-variable-reference)
 10. [Troubleshooting](#10-troubleshooting)
 
@@ -113,6 +113,8 @@ BLOCKCHAIN_RPC_URL=http://127.0.0.1:8545
 CLAIM_VERIFICATION_CONTRACT_ADDRESS=
 DATA_CENTER_REGISTRY_CONTRACT_ADDRESS=
 STAKE_MANAGER_CONTRACT_ADDRESS=
+JUROR_COURT_CONTRACT_ADDRESS=
+OOV3_ADDRESS=0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944
 USDC_CONTRACT_ADDRESS=
 DEPLOYER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 CORS_ORIGINS=http://localhost:3000
@@ -134,12 +136,16 @@ Edit `frontend/.env.local`:
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:3001/api/v1
 NEXT_PUBLIC_MAPLIBRE_STYLE=https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json
-NEXT_PUBLIC_CHAIN_ID=31337
+NEXT_PUBLIC_CHAIN_ID=11155111
 NEXT_PUBLIC_CLAIM_VERIFICATION_CONTRACT=
 NEXT_PUBLIC_DATA_CENTER_REGISTRY_CONTRACT=
+NEXT_PUBLIC_STAKE_MANAGER_CONTRACT=
+NEXT_PUBLIC_JUROR_COURT_CONTRACT=
 NEXT_PUBLIC_USDC_CONTRACT=
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
 ```
+
+> `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is optional — injected wallets (MetaMask etc.) work without it; get a free id at cloud.walletconnect.com for WalletConnect QR support.
 
 ### Contracts `.env`
 
@@ -150,13 +156,15 @@ cd data_centers
 Create `data_centers/.env`:
 
 ```env
-PRIVATE_KEY=ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 RPC_URL=http://127.0.0.1:8545
 ETHERSCAN_API_KEY=
 USDC_ADDRESS=0x0000000000000000000000000000000000000001
+OOV3_ADDRESS=0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944
 ```
 
-> The private key above is Anvil's first pre-funded test account. Never use it on mainnet.
+> The private key above is Anvil's first pre-funded test account (must include the `0x` prefix). Never use it on mainnet.
+> `OOV3_ADDRESS` is UMA's OptimisticOracleV3 on Ethereum Sepolia. For local Anvil runs, point it at a deployed `MockOOV3` (see `test/mocks/Mocks.sol`) instead.
 
 ---
 
@@ -192,7 +200,7 @@ forge test -vvv
 forge test --match-path test/ClaimVerification.t.sol -vvv
 ```
 
-**Expected**: All tests pass (submitClaim, attestClaim, challengeClaim, finalizeClaim, resolveDispute).
+**Expected**: All 26 tests pass (ClaimVerification: submit → attest → settle happy path, challenge → jury rulings, UMA dispute routing; JurorCourt: register/draw/vote/resolve/slash).
 
 ### Deploy to local Anvil
 
@@ -205,13 +213,14 @@ forge script script/Deploy.s.sol \
   --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
-This deploys all 3 contracts and writes addresses to `data_centers/deployed-addresses.json`:
+This deploys all 4 contracts (DataCenterRegistry, StakeManager, JurorCourt, ClaimVerification), wires authorizations between them, and writes addresses to `data_centers/deployed-addresses.json`:
 
 ```json
 {
   "DataCenterRegistry": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
   "StakeManager": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-  "ClaimVerification": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+  "JurorCourt": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+  "ClaimVerification": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
   "USDC": "0x0000000000000000000000000000000000000001"
 }
 ```
@@ -225,6 +234,7 @@ Open `data_centers/deployed-addresses.json` and paste the addresses:
 CLAIM_VERIFICATION_CONTRACT_ADDRESS=<ClaimVerification address>
 DATA_CENTER_REGISTRY_CONTRACT_ADDRESS=<DataCenterRegistry address>
 STAKE_MANAGER_CONTRACT_ADDRESS=<StakeManager address>
+JUROR_COURT_CONTRACT_ADDRESS=<JurorCourt address>
 USDC_CONTRACT_ADDRESS=<USDC address>
 ```
 
@@ -232,6 +242,8 @@ USDC_CONTRACT_ADDRESS=<USDC address>
 ```env
 NEXT_PUBLIC_CLAIM_VERIFICATION_CONTRACT=<ClaimVerification address>
 NEXT_PUBLIC_DATA_CENTER_REGISTRY_CONTRACT=<DataCenterRegistry address>
+NEXT_PUBLIC_STAKE_MANAGER_CONTRACT=<StakeManager address>
+NEXT_PUBLIC_JUROR_COURT_CONTRACT=<JurorCourt address>
 NEXT_PUBLIC_USDC_CONTRACT=<USDC address>
 ```
 
@@ -327,10 +339,11 @@ cd frontend && npm install && npm run dev
 | `http://localhost:3000/map` | MapLibre map — 6 sample pins (green/yellow/blue/red) |
 | `http://localhost:3000/data-centers` | Card grid — search + status/country filters |
 | `http://localhost:3000/data-centers/1` | Detail — info cards, claims history |
-| `http://localhost:3000/claims` | My Claims — tabs (All/Pending/Attested/Finalized) |
-| `http://localhost:3000/claims/submit` | Submit form — DC selector, fact type, stake input |
-| `http://localhost:3000/verify` | Verifier dashboard — review/attest/challenge |
-| `http://localhost:3000/disputes` | Disputes — active + resolved with jury decisions |
+| `http://localhost:3000/claims` | My Claims — live on-chain status badges, timeline, Settle button |
+| `http://localhost:3000/claims/submit` | Submit form — upload proof → wallet tx → backend mirror |
+| `http://localhost:3000/verify` | Verifier dashboard — attest/challenge via wallet |
+| `http://localhost:3000/disputes` | Jury & Disputes — drawn panels, vote, resolve, results |
+| `http://localhost:3000/stake` | Stake — deposit/withdraw USDC, juror registration |
 | `http://localhost:3000/profile` | Profile — avatar, reputation, staking overview |
 
 ### Map pin colors
@@ -354,98 +367,49 @@ npm start
 
 ## 7. End-to-End Testing Flow
 
-Test the full claim lifecycle: **submit → attest → (challenge) → finalize**.
+Test the full wallet-driven claim lifecycle: **deposit → submit → attest → settle** (happy path) and **challenge → jury vote → resolve** (dispute path). Use two browser wallets (e.g. MetaMask account A and B) on Sepolia.
 
-### Step 1: Register two users
+### Happy path
 
-```bash
-# Contributor
-curl -X POST http://localhost:3001/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"contributor@test.com\",\"password\":\"password123\",\"displayName\":\"Alice\"}"
+1. **Wallet A** — open `/stake`, approve + deposit ~50 USDC into StakeManager
+2. **Wallet A** — open `/claims/submit`, pick a data center + fact, attach a proof file, sign the `submitClaim` transaction (locks 20 USDC)
+3. **Wallet B** — open `/stake`, deposit ~700 USDC (verifier stake + UMA bond)
+4. **Wallet B** — open `/verify`, click **Attest** on the pending claim (locks 200 USDC + pulls the OOV3 bond, creates the UMA assertion)
+5. Wait for the challenge window to close (owner can call `updateParameters` on ClaimVerification to shorten it for demos)
+6. **Wallet A** — open `/claims`, click **Settle & Claim Rewards** → stakes released + rewards paid
 
-# Verifier
-curl -X POST http://localhost:3001/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"verifier@test.com\",\"password\":\"password123\",\"displayName\":\"Bob\"}"
-```
+### Dispute path
 
-### Step 2: Login both and save tokens
-
-```bash
-# On macOS/Linux (using jq):
-CONTRIBUTOR_TOKEN=$(curl -s -X POST http://localhost:3001/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"contributor@test.com","password":"password123"}' | jq -r '.token')
-
-VERIFIER_TOKEN=$(curl -s -X POST http://localhost:3001/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"verifier@test.com","password":"password123"}' | jq -r '.token')
-
-# On Windows PowerShell:
-$resp = Invoke-RestMethod -Uri http://localhost:3001/api/v1/auth/login -Method POST -ContentType "application/json" -Body '{"email":"contributor@test.com","password":"password123"}'
-$CONTRIBUTOR_TOKEN = $resp.token
-```
-
-### Step 3: Contributor submits a claim
-
-```bash
-curl -X POST http://localhost:3001/api/v1/claims \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $CONTRIBUTOR_TOKEN" \
-  -d '{"dataCenterId":"1","factType":"GRID_STATUS","factData":"Connected to PJM Interconnection as of Q1 2024"}'
-```
-
-### Step 4: Verifier attests
-
-```bash
-# List pending claims
-curl http://localhost:3001/api/v1/claims/pending \
-  -H "Authorization: Bearer $VERIFIER_TOKEN"
-
-# Attest (replace CLAIM_ID)
-curl -X POST http://localhost:3001/api/v1/claims/CLAIM_ID/attest \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $VERIFIER_TOKEN"
-```
-
-### Step 5: (Optional) Challenge
-
-```bash
-curl -X POST http://localhost:3001/api/v1/claims/CLAIM_ID/challenge \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $VERIFIER_TOKEN" \
-  -d '{"reason":"PJM records show different interconnection position"}'
-```
-
-### Step 6: Verify in the UI
-
-Open `http://localhost:3000` and navigate to:
-- `/claims` — see submitted claim with status badge
-- `/verify` — see pending claims for review
-- `/data-centers/1` — see claim in history timeline
-- `/disputes` — see any active disputes
+1. After step 4 above, **Wallet B** (or a third wallet with ~300 USDC deposited) clicks **Challenge** on `/verify` and enters a reason
+2. Register 3 juror wallets on `/stake` (each deposits ≥100 USDC and clicks **Register as Juror**)
+3. Open `/disputes` — the drawn panel sees vote buttons; each juror votes **Claim is correct** / **Claim is incorrect**
+4. After the voting window, anyone clicks **Resolve & Execute Ruling** → majority side wins, payouts execute, minority jurors slashed
+5. Check `/claims` — status flips to Finalized (claim upheld) or Rejected (claim incorrect)
 
 ---
 
-## 8. Deploy to Testnet (Base Sepolia)
+## 8. Deploy to Testnet (Ethereum Sepolia)
 
-### Get testnet ETH
+### Get testnet funds
 
-- https://www.coinbase.com/faucets (Base Sepolia)
-- https://sepoliafaucet.com/
+- Sepolia ETH: https://sepoliafaucet.com/ or https://www.alchemy.com/faucets/sepolia
+- Sepolia USDC (Circle testnet): https://faucet.circle.com/ — the verifier needs ≥ 600 USDC (200 stake + ~400 OOV3 bond); jurors need ≥ 100 each
 
-### Base Sepolia USDC address
+### Key Sepolia addresses
 
-`0x036CbD53842c5426634e7929541eC2318f3dCF7e`
+| Contract | Address |
+|----------|---------|
+| UMA OptimisticOracleV3 | `0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944` |
+| USDC (Circle testnet) | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
 
 ### Update contracts `.env`
 
 ```env
-PRIVATE_KEY=your_real_private_key_no_0x_prefix
-RPC_URL=https://sepolia.base.org
-ETHERSCAN_API_KEY=your_basescan_api_key
-USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+PRIVATE_KEY=0xYourPrivateKeyHere
+RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
+ETHERSCAN_API_KEY=your_etherscan_api_key
+USDC_ADDRESS=0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238
+OOV3_ADDRESS=0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944
 ```
 
 ### Deploy
@@ -455,16 +419,16 @@ cd data_centers
 
 forge script script/Deploy.s.sol \
   --broadcast \
-  --rpc-url https://sepolia.base.org \
+  --rpc-url $RPC_URL \
   --verify
 ```
 
 ### Update backend + frontend
 
 Copy addresses from `deployed-addresses.json` into:
-- `backend/.env` → `CLAIM_VERIFICATION_CONTRACT_ADDRESS`, `DATA_CENTER_REGISTRY_CONTRACT_ADDRESS`, etc.
-- `frontend/.env.local` → `NEXT_PUBLIC_CLAIM_VERIFICATION_CONTRACT`, etc.
-- `frontend/.env.local` → `NEXT_PUBLIC_CHAIN_ID=84532`
+- `backend/.env` → `CLAIM_VERIFICATION_CONTRACT_ADDRESS`, `DATA_CENTER_REGISTRY_CONTRACT_ADDRESS`, `STAKE_MANAGER_CONTRACT_ADDRESS`, `JUROR_COURT_CONTRACT_ADDRESS`, `USDC_CONTRACT_ADDRESS`
+- `frontend/.env.local` → `NEXT_PUBLIC_CLAIM_VERIFICATION_CONTRACT`, `NEXT_PUBLIC_DATA_CENTER_REGISTRY_CONTRACT`, `NEXT_PUBLIC_STAKE_MANAGER_CONTRACT`, `NEXT_PUBLIC_JUROR_COURT_CONTRACT`, `NEXT_PUBLIC_USDC_CONTRACT`
+- `frontend/.env.local` → `NEXT_PUBLIC_CHAIN_ID=11155111`
 
 ---
 
@@ -474,10 +438,11 @@ Copy addresses from `deployed-addresses.json` into:
 
 | Variable | Required | Local Value |
 |----------|----------|-------------|
-| `PRIVATE_KEY` | Yes | `ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` (Anvil #1) |
+| `PRIVATE_KEY` | Yes | `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` (Anvil #1, keep the `0x` prefix) |
 | `RPC_URL` | Yes | `http://127.0.0.1:8545` |
-| `ETHERSCAN_API_KEY` | No | Get from basescan.org |
+| `ETHERSCAN_API_KEY` | No | Get from etherscan.org |
 | `USDC_ADDRESS` | Yes | `0x0000000000000000000000000000000000000001` (mock for Anvil) |
+| `OOV3_ADDRESS` | Yes | UMA OOV3 on Sepolia, or a MockOOV3 address on Anvil |
 
 ### Backend (`backend/.env`)
 
@@ -498,6 +463,8 @@ Copy addresses from `deployed-addresses.json` into:
 | `CLAIM_VERIFICATION_CONTRACT_ADDRESS` | No | — | From `deployed-addresses.json` |
 | `DATA_CENTER_REGISTRY_CONTRACT_ADDRESS` | No | — | From `deployed-addresses.json` |
 | `STAKE_MANAGER_CONTRACT_ADDRESS` | No | — | From `deployed-addresses.json` |
+| `JUROR_COURT_CONTRACT_ADDRESS` | No | — | From `deployed-addresses.json` |
+| `OOV3_ADDRESS` | No | — | UMA OOV3 address (Sepolia: `0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944`) |
 | `USDC_CONTRACT_ADDRESS` | No | — | USDC address |
 | `DEPLOYER_PRIVATE_KEY` | No | — | For backend contract calls |
 | `CORS_ORIGINS` | No | `http://localhost:3000` | |
@@ -510,11 +477,13 @@ Copy addresses from `deployed-addresses.json` into:
 |----------|----------|---------|-------|
 | `NEXT_PUBLIC_API_URL` | Yes | `http://localhost:3001/api/v1` | |
 | `NEXT_PUBLIC_MAPLIBRE_STYLE` | No | Carto dark URL | Free, no key needed |
-| `NEXT_PUBLIC_CHAIN_ID` | Yes | `31337` | 31337=Anvil, 84532=Base Sepolia |
+| `NEXT_PUBLIC_CHAIN_ID` | Yes | `11155111` | Sepolia chain id |
 | `NEXT_PUBLIC_CLAIM_VERIFICATION_CONTRACT` | No | — | Contract address |
 | `NEXT_PUBLIC_DATA_CENTER_REGISTRY_CONTRACT` | No | — | Contract address |
+| `NEXT_PUBLIC_STAKE_MANAGER_CONTRACT` | No | — | Contract address |
+| `NEXT_PUBLIC_JUROR_COURT_CONTRACT` | No | — | Contract address |
 | `NEXT_PUBLIC_USDC_CONTRACT` | No | — | USDC address |
-| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | No | — | From cloud.walletconnect.com |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | No | — | From cloud.walletconnect.com (optional) |
 
 ---
 

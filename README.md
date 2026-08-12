@@ -1,6 +1,6 @@
 # DataPulse — Data Center Intelligence Platform
 
-Map, verify, and invest in global data center infrastructure. Crowdsourced data from local experts, verified on-chain, accessible to everyone.
+Contribute data center facts with USDC stakes on-chain. Verifiers attest via UMA's Optimistic Oracle V3, disputes are decided by randomly drawn juror panels — no admins, fully decentralized.
 
 > **Getting started?** See [SETUP_GUIDE.md](./SETUP_GUIDE.md) for step-by-step setup, testing, and deployment instructions.
 
@@ -11,86 +11,77 @@ MVP/
 ├── data_centers/       # Foundry smart contracts
 │   ├── src/
 │   │   ├── DataCenterRegistry.sol
-│   │   ├── ClaimVerification.sol
-│   │   └── StakeManager.sol
+│   │   ├── ClaimVerification.sol     # UMA OOV3 assertions + jury routing
+│   │   ├── JurorCourt.sol            # Kleros-style dispute panels
+│   │   ├── StakeManager.sol          # USDC escrow
+│   │   └── interfaces/               # OOV3 + IClaimVerification
 │   ├── script/Deploy.s.sol
 │   ├── test/ClaimVerification.t.sol
+│   ├── test/JurorCourt.t.sol
 │   └── foundry.toml
-├── backend/            # NestJS API
+├── backend/            # NestJS API (indexing/mirror layer)
 │   ├── src/
-│   │   ├── auth/           # JWT + wallet auth
-│   │   ├── users/          # User management
+│   │   ├── auth/           # JWT auth
+│   │   ├── users/          # User management + wallet linking
 │   │   ├── data-centers/   # DC CRUD + GeoJSON
-│   │   ├── claims/         # Claim lifecycle + BullMQ
-│   │   ├── disputes/       # Dispute resolution
+│   │   ├── claims/         # Mirror of on-chain claim lifecycle
+│   │   ├── disputes/       # Dispute records
 │   │   ├── staking/        # Stake tracking
-│   │   ├── blockchain/     # Ethers.js integration
+│   │   ├── blockchain/     # Ethers.js contract reads
 │   │   └── map/            # Map data endpoints
-│   └── docker-compose.yml
 ├── frontend/           # Next.js 15 App Router
 │   └── src/
 │       ├── app/
 │       │   ├── (auth)/       # Login, Register
-│       │   └── (dashboard)/  # Map, DCs, Claims, Verify, Disputes, Profile
+│       │   └── (dashboard)/  # Map, DCs, Claims, Verify, Jury, Stake, Profile
+│       ├── hooks/            # useClaims, useStaking (wallet tx hooks)
 │       ├── components/ui/    # shadcn/ui primitives
-│       ├── lib/              # API client, utils
+│       ├── lib/              # API client, web3 config, ABIs, contract addresses
 │       ├── stores/           # Zustand stores
 │       └── types/            # TypeScript types
-└── .env.example
 ```
+
+## How Verification Works
+
+1. **Deposit & Submit** — Contributor deposits USDC into StakeManager and submits a claim on-chain (locks 20 USDC). Proof documents upload to the backend for indexing.
+2. **Attest** — A verifier stakes 200 USDC and attests. ClaimVerification simultaneously asserts the claim's truth into **UMA OptimisticOracleV3** with a 7-day liveness window (bond pulled from the verifier's deposit).
+3. **Happy path** — Nobody disputes → after the window, anyone calls `settleClaim()`: the UMA assertion settles and stakes + rewards pay out. No admin anywhere.
+4. **Dispute path** — Anyone can `challengeClaim()` (locks 300 USDC), which creates a **JurorCourt** dispute. 3 jurors are randomly drawn from registered (staked) jurors and vote within 24h. Majority decides; majority voters earn rewards, minority voters are slashed 50%. UMA's permissionless OOV3 dispute route also feeds into the same court.
 
 ## Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
-| **Smart Contracts** | Solidity, Foundry, USDC (ERC-20) |
-| **Backend** | NestJS 11, TypeORM, PostgreSQL 16, BullMQ + Redis 7, Ethers.js v6 |
-| **Frontend** | Next.js 15, React 19, Tailwind CSS v4, MapLibre GL JS, Zustand, TanStack Query, Framer Motion |
-| **Auth** | JWT + EIP-712 wallet signature |
+| **Smart Contracts** | Solidity, Foundry, USDC (ERC-20), UMA OptimisticOracleV3, custom JurorCourt |
+| **Backend** | NestJS 11, TypeORM, PostgreSQL (Supabase), optional BullMQ + Redis, Ethers.js v6 |
+| **Frontend** | Next.js 15, React 19, Tailwind CSS v4, wagmi + viem + RainbowKit, MapLibre GL JS, Framer Motion |
+| **Network** | Ethereum Sepolia (chain id 11155111) |
 
 ## Quick Start
 
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+
-- [PostgreSQL](https://www.postgresql.org/download/) 14+ (installed locally)
 - [Foundry](https://getfoundry.sh/) (for smart contracts)
+- Sepolia ETH + testnet USDC (see [SETUP_GUIDE.md](./SETUP_GUIDE.md))
 
 > See [SETUP_GUIDE.md](./SETUP_GUIDE.md) for detailed step-by-step instructions.
 
 ### 1. Configure environment
 
-```bash
-cd backend
-cp .env.example .env
-# Edit .env — fill in DATABASE_PASSWORD, JWT_SECRET, etc.
+Fill in `backend/.env` (Supabase `DATABASE_URL`, contract addresses) and `frontend/.env.local` (contract addresses). See [SETUP_GUIDE.md](./SETUP_GUIDE.md) for the full variable reference.
 
-cd ../frontend
-cp .env.example .env.local
-```
-
-### 2. Set up PostgreSQL
+### 2. Deploy contracts (Sepolia)
 
 ```bash
-# Create the database
-psql -U postgres -c "CREATE DATABASE data_centers;"
-```
-
-### 3. Deploy smart contracts (local)
-
-```bash
-# Terminal 1: Start local blockchain
-anvil
-
-# Terminal 2: Deploy
 cd data_centers
 forge build
-forge script script/Deploy.s.sol --broadcast --rpc-url http://127.0.0.1:8545
-
+forge test
+forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 # Copy addresses from deployed-addresses.json to backend/.env and frontend/.env.local
 ```
 
-### 4. Start backend
+### 3. Start backend
 
 ```bash
 cd backend
@@ -100,7 +91,7 @@ npm run start:dev
 
 Backend runs on `http://localhost:3001` with Swagger docs at `/api/docs`.
 
-### 5. Start frontend
+### 4. Start frontend
 
 ```bash
 cd frontend
@@ -116,58 +107,62 @@ Frontend runs on `http://localhost:3000`.
 Stores data center metadata on-chain (name, coordinates, status, owner).
 
 ### ClaimVerification
-Optimistic oracle pattern:
-1. **Submit** — Contributor submits a claim with USDC stake
-2. **Attest** — Verifier reviews and attests with a larger stake
-3. **Challenge** — Challenger disputes within 7-day window
-4. **Finalize** — Auto-finalizes after challenge window if no dispute
-5. **Resolve** — Arbitrator resolves disputes, slashes loser's stake
+Decentralized optimistic verification (no admin resolution):
+1. **Submit** — Contributor locks 20 USDC from their StakeManager deposit
+2. **Attest** — Verifier locks 200 USDC; the claim's truth is asserted on UMA OOV3 (bond pulled from verifier deposit) with a 7-day liveness window
+3. **Settle** — After the window, anyone calls `settleClaim()`; stakes released + rewards paid (claimer +50%, verifier +25% of stakes)
+4. **Challenge** — Challenger locks 300 USDC → creates a JurorCourt dispute; jury majority ruling executes payouts via `executeCourtRuling`
+
+### JurorCourt
+Kleros-style mini court: register with ≥100 USDC stake, 3 jurors randomly drawn per dispute (blockhash seed — MVP randomness, documented), 24h voting window, majority rules (ties default to claim), minority slashed 50%, majority shares a treasury reward.
 
 ### StakeManager
-USDC escrow: deposit, withdraw, lock for claims, release, slash, reward.
+USDC escrow: deposit, withdraw, lock/release for claims, slash, reward, and `transferFromDeposit` for pulling UMA bonds.
 
 ## API Endpoints
+
+The on-chain contracts are canonical; backend claim/dispute endpoints are thin mirrors the frontend calls after each wallet transaction succeeds.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/auth/register` | Register with email + password |
 | POST | `/auth/login` | Login with email + password |
-| POST | `/auth/wallet-login` | Login with wallet signature |
-| GET | `/data-centers` | List data centers (filter, paginate) |
-| GET | `/data-centers/:id` | Data center detail |
-| GET | `/data-centers/geojson` | GeoJSON for map |
-| POST | `/claims` | Submit a claim |
-| GET | `/claims` | List claims |
-| POST | `/claims/:id/attest` | Attest a claim |
-| POST | `/claims/:id/challenge` | Challenge a claim |
-| GET | `/disputes` | List disputes |
-| GET | `/map/geojson` | Map GeoJSON data |
 | GET | `/users/me` | Current user profile |
+| PATCH | `/users/me/wallet` | Link a wallet address to the account |
+| GET | `/data-centers` | List data centers (filter, paginate) |
+| GET | `/data-centers/geojson` | GeoJSON for map |
+| POST | `/uploads` | Upload a proof document (multipart) |
+| POST | `/claims` | Mirror an on-chain claim (`onChainClaimId`, `txHash`) |
+| GET | `/claims` | List claims |
+| POST | `/claims/:id/attest` | Mirror an attestation |
+| POST | `/claims/:id/challenge` | Mirror a challenge |
+| GET | `/disputes` | List dispute records |
+| GET | `/map/geojson` | Map GeoJSON data |
 | GET | `/staking/me/stats` | Staking statistics |
 
 ## Frontend Pages
 
 | Route | Description |
 |-------|-------------|
-| `/` | Landing page with hero and features |
-| `/login` | Sign in (email or wallet) |
-| `/register` | Create account |
+| `/` | Landing page |
+| `/login`, `/register` | Auth |
 | `/map` | Full-screen MapLibre map with data center pins |
-| `/data-centers` | Browse data centers with filters |
-| `/data-centers/[id]` | Data center detail with claims history |
-| `/claims` | Your submitted claims |
-| `/claims/submit` | Submit a new claim |
-| `/verify` | Review and attest/challenge pending claims |
-| `/disputes` | Active and resolved disputes |
+| `/data-centers`, `/data-centers/[id]` | Browse / detail with claims history |
+| `/claims` | Your claims with live on-chain status + timeline + Settle button |
+| `/claims/submit` | Wallet-first flow: upload proof → on-chain tx → mirror |
+| `/verify` | Attest / challenge claims via wallet transactions |
+| `/disputes` | Jury view: drawn panels, vote (if drawn), resolve, results |
+| `/stake` | Deposit/withdraw USDC, juror registration |
 | `/profile` | User profile, reputation, staking stats |
 
 ## Staking Economics
 
 | Role | Stake Amount | Reward | Risk |
 |------|-------------|--------|------|
-| Contributor | $20–50 USDC | 50% of stake on finalization | Stake slashed if claim is incorrect |
-| Verifier | $200–500 USDC | 25% of contributor stake | Stake slashed if attested claim is incorrect |
-| Challenger | $300–1000 USDC | Winner takes loser's stake | Stake slashed if challenge fails |
+| Contributor | 20 USDC | +50% of stake on settlement | Stake slashed if jury rejects the claim |
+| Verifier | 200 USDC + OOV3 bond | +25% of contributor stake | Stake slashed if jury rejects the claim |
+| Challenger | 300 USDC | Winner takes loser-side stake | Stake slashed if challenge fails |
+| Juror | 100 USDC (locked) | Share of 30 USDC treasury reward per dispute | 50% of juror stake slashed for minority votes |
 
 ## Development
 
