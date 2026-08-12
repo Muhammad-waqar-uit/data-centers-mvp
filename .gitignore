@@ -1,0 +1,25 @@
+# Excluded docs
+This is a Enriched C - 2026-08-12 01.09.md
+opencode.json
+
+# Qoder cache
+.qoder/
+
+# Sub-repo build artifacts (each has its own .git)
+backend/node_modules/
+backend/dist/
+backend/uploads/
+frontend/node_modules/
+frontend/.next/
+data_centers/out/
+data_centers/cache/
+data_centers/broadcast/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env files (never commit secrets)
+backend/.env
+frontend/.env.local
+data_centers/.env
