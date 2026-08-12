@@ -11,6 +11,7 @@ import {
   Gavel,
   User,
   Wallet,
+  Landmark,
   ChevronLeft,
   Menu,
 } from "lucide-react";
@@ -22,7 +23,8 @@ const navItems = [
   { href: "/data-centers", label: "Data Centers", icon: Database },
   { href: "/claims", label: "My Claims", icon: FileText },
   { href: "/verify", label: "Verify Claims", icon: ShieldCheck },
-  { href: "/disputes", label: "Disputes", icon: Gavel },
+  { href: "/disputes", label: "Jury & Disputes", icon: Gavel },
+  { href: "/stake", label: "Stake", icon: Landmark },
 ];
 
 const bottomItems = [
@@ -113,10 +115,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           );
         })}
         <Link
-          href="/profile"
+          href="/stake"
           className={cn(
             "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-            "text-muted-foreground hover:bg-secondary hover:text-foreground",
+            pathname === "/stake"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-secondary hover:text-foreground",
             collapsed && "justify-center px-0"
           )}
           title={collapsed ? "Wallet" : undefined}

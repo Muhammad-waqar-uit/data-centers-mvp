@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Optional, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, FindOptionsWhere } from 'typeorm';
 import { Queue } from 'bullmq';
@@ -23,6 +23,8 @@ export class ClaimsService {
       claimerId: userId,
       status: ClaimStatus.PENDING,
       stakeAmount: 20, // default minimum
+      onChainClaimId: dto.onChainClaimId,
+      txHash: dto.txHash,
     });
 
     const saved = await this.claimsRepo.save(claim);
@@ -78,15 +80,10 @@ export class ClaimsService {
     });
   }
 
+  // Thin mirror write — the on-chain ClaimVerification tx is canonical; the
+  // frontend calls this after the wallet tx succeeds. No status gating here.
   async attest(claimId: string, verifierId: string, dto: AttestClaimDto): Promise<Claim> {
     const claim = await this.findOne(claimId);
-
-    if (claim.status !== ClaimStatus.PENDING) {
-      throw new BadRequestException('Claim is not in pending status');
-    }
-    if (claim.claimerId === verifierId) {
-      throw new BadRequestException('Cannot attest your own claim');
-    }
 
     const challengeWindowEnd = new Date();
     challengeWindowEnd.setDate(challengeWindowEnd.getDate() + 7); // 7-day window
@@ -101,7 +98,7 @@ export class ClaimsService {
     const saved = await this.claimsRepo.save(claim);
     await this.usersService.incrementClaimsVerified(verifierId);
 
-    // Schedule auto-finalization after challenge window (only if Redis/BullMQ is available)
+    // Schedule auto-mirror finalization after challenge window (only if Redis/BullMQ is available)
     if (this.claimsQueue) {
       await this.claimsQueue.add(
         'finalize-claim',
@@ -113,16 +110,9 @@ export class ClaimsService {
     return saved;
   }
 
+  // Thin mirror write — on-chain jury dispute is canonical.
   async challenge(claimId: string, challengerId: string, dto: ChallengeClaimDto): Promise<Claim> {
     const claim = await this.findOne(claimId);
-
-    if (claim.status !== ClaimStatus.ATTESTED) {
-      throw new BadRequestException('Claim is not attested');
-    }
-
-    if (claim.challengeWindowEnd && new Date() > claim.challengeWindowEnd) {
-      throw new BadRequestException('Challenge window has closed');
-    }
 
     claim.status = ClaimStatus.CHALLENGED;
     claim.challengerId = challengerId;
@@ -133,24 +123,18 @@ export class ClaimsService {
     return this.claimsRepo.save(claim);
   }
 
+  // Thin mirror write — called after on-chain settleClaim() succeeds.
   async finalize(claimId: string): Promise<Claim> {
     const claim = await this.findOne(claimId);
-
-    if (claim.status !== ClaimStatus.ATTESTED) {
-      throw new BadRequestException('Claim cannot be finalized');
-    }
 
     claim.status = ClaimStatus.FINALIZED;
 
     return this.claimsRepo.save(claim);
   }
 
+  // Thin mirror write — called after the on-chain jury ruling executes.
   async resolveDispute(claimId: string, claimCorrect: boolean): Promise<Claim> {
     const claim = await this.findOne(claimId);
-
-    if (claim.status !== ClaimStatus.CHALLENGED) {
-      throw new BadRequestException('Claim is not in dispute');
-    }
 
     claim.status = claimCorrect ? ClaimStatus.FINALIZED : ClaimStatus.REJECTED;
     return this.claimsRepo.save(claim);

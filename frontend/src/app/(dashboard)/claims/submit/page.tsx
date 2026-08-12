@@ -3,9 +3,12 @@
 import { useState, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
+import { useAccount, usePublicClient } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { keccak256, toHex, decodeEventLog } from "viem";
+import { toast } from "sonner";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
@@ -15,18 +18,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Upload, Wallet, Info } from "lucide-react";
-import { dataCentersApi, claimsApi } from "@/lib/api";
+import { ArrowLeft, Upload, Info, Loader2 } from "lucide-react";
+import { dataCentersApi, claimsApi, uploadsApi } from "@/lib/api";
+import { useClaims } from "@/hooks/useClaims";
+import { claimVerificationAbi } from "@/lib/abis";
 import type { DataCenter } from "@/types";
 
+// Must match the on-chain FactType enum order
 const FACT_TYPES = [
   { value: "INTERCONNECTION_QUEUE", label: "Interconnection Queue Status" },
   { value: "OWNERSHIP", label: "Ownership / Operator" },
   { value: "GRID_STATUS", label: "Grid Connection Status" },
   { value: "POWER_CAPACITY", label: "Power Capacity" },
   { value: "CONSTRUCTION_STATUS", label: "Construction Status" },
-  { value: "PERMIT_STATUS", label: "Permit / Zoning Status" },
-  { value: "WATER_USAGE", label: "Water Usage" },
+  { value: "TRANSACTION_HISTORY", label: "Transaction History" },
+  { value: "LAND_USE", label: "Land Use" },
+  { value: "WATER_COOLING", label: "Water Cooling" },
+  { value: "FIBER_CONNECTIVITY", label: "Fiber Connectivity" },
   { value: "OTHER", label: "Other" },
 ];
 
@@ -35,12 +43,15 @@ export default function SubmitClaimPage() {
   const router = useRouter();
   const preselectedDC = searchParams.get("dc") || "";
 
+  const { isConnected } = useAccount();
+  const publicClient = usePublicClient();
+  const { submitClaim, isConfirming } = useClaims();
+
   const [dataCenters, setDataCenters] = useState<DataCenter[]>([]);
   const [selectedDC, setSelectedDC] = useState(preselectedDC);
   const [factType, setFactType] = useState("");
   const [factData, setFactData] = useState("");
-  const [proofUrl, setProofUrl] = useState("");
-  const [stakeAmount, setStakeAmount] = useState("50");
+  const [proofFile, setProofFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -52,11 +63,7 @@ export default function SubmitClaimPage() {
       const res = await dataCentersApi.list({ limit: 100 });
       setDataCenters(res.data.data || res.data);
     } catch {
-      setDataCenters([
-        { id: "1", name: "AWS US-East-1", latitude: 38.8951, longitude: -77.0364, country: "US", region: "Virginia", city: "Ashburn", status: "operating", ownerType: "hyperscale", ownerName: "Amazon", powerCapacityMW: 500, sizeMW: 300, gridStatus: "connected", interconnectionQueueId: null, description: null, isPublic: true, imageUrl: null, onChainId: 1, createdAt: "2024-01-01" },
-        { id: "2", name: "Google Cloud us-west1", latitude: 37.7749, longitude: -122.4194, country: "US", region: "Oregon", city: "The Dalles", status: "operating", ownerType: "hyperscale", ownerName: "Google", powerCapacityMW: 350, sizeMW: 200, gridStatus: "connected", interconnectionQueueId: null, description: null, isPublic: true, imageUrl: null, onChainId: 2, createdAt: "2024-01-15" },
-        { id: "3", name: "Equinix LD8", latitude: 51.5072, longitude: 0.1276, country: "UK", region: "London", city: "London", status: "under_construction", ownerType: "colocation", ownerName: "Equinix", powerCapacityMW: 150, sizeMW: 100, gridStatus: "pending", interconnectionQueueId: null, description: null, isPublic: true, imageUrl: null, onChainId: 3, createdAt: "2024-02-01" },
-      ]);
+      setDataCenters([]);
     }
   }
 
@@ -66,15 +73,67 @@ export default function SubmitClaimPage() {
 
     setSubmitting(true);
     try {
-      await claimsApi.submit({
-        dataCenterId: selectedDC,
-        factType,
-        factData,
-        proofDocumentUrl: proofUrl || undefined,
-      });
+      // 1. Upload proof document to backend (optional)
+      let proofUrl: string | undefined;
+      if (proofFile) {
+        const uploadToast = toast.loading("Uploading proof document...");
+        try {
+          const res = await uploadsApi.upload(proofFile);
+          proofUrl = res.data.url;
+          toast.success("Proof uploaded", { id: uploadToast });
+        } catch {
+          toast.error("Proof upload failed — continuing without it", { id: uploadToast });
+        }
+      }
+
+      // 2. Submit the claim on-chain (locks contributor stake)
+      const dc = dataCenters.find((d) => d.id === selectedDC);
+      const onChainDcId = BigInt(dc?.onChainId ?? (Number(selectedDC) || 1));
+      const factTypeIndex = FACT_TYPES.findIndex((ft) => ft.value === factType);
+      const proofHash = keccak256(toHex(factData));
+
+      const txHash = await submitClaim(onChainDcId, factTypeIndex, factData, proofHash);
+
+      // 3. Parse the on-chain claim id from the receipt
+      let onChainClaimId: number | undefined;
+      if (txHash && publicClient) {
+        try {
+          const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+          for (const log of receipt.logs) {
+            try {
+              const decoded = decodeEventLog({ abi: claimVerificationAbi, ...log });
+              if (decoded.eventName === "ClaimSubmitted") {
+                onChainClaimId = Number(decoded.args.claimId);
+                break;
+              }
+            } catch {
+              /* unrelated log */
+            }
+          }
+        } catch {
+          /* receipt parse is best-effort */
+        }
+      }
+
+      // 4. Mirror metadata to the backend for indexing
+      try {
+        await claimsApi.submit({
+          dataCenterId: selectedDC,
+          factType,
+          factData,
+          proofDocumentUrl: proofUrl,
+          proofHash,
+          onChainClaimId,
+          txHash,
+        });
+      } catch {
+        /* backend mirror is best-effort; the on-chain record is canonical */
+      }
+
+      toast.success("Claim submitted on-chain");
       router.push("/claims");
-    } catch (err) {
-      console.error("Failed to submit claim:", err);
+    } catch {
+      // toast already shown by hook
     } finally {
       setSubmitting(false);
     }
@@ -91,7 +150,8 @@ export default function SubmitClaimPage() {
           <CardHeader>
             <CardTitle className="text-xl">Submit a Claim</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Submit verified data about a data center. You&apos;ll need to stake USDC which is returned if your claim is verified.
+              Contribute verified data about a data center. A 20 USDC stake is locked
+              from your deposit and returned with a reward when your claim is verified.
             </p>
           </CardHeader>
 
@@ -142,45 +202,45 @@ export default function SubmitClaimPage() {
                 />
               </div>
 
-              {/* Proof URL */}
+              {/* Proof File */}
               <div className="space-y-2">
-                <Label>Proof Document URL (optional)</Label>
-                <div className="relative">
-                  <Upload className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="https://..."
-                    value={proofUrl}
-                    onChange={(e) => setProofUrl(e.target.value)}
-                    className="pl-9"
+                <Label>Proof Document (optional)</Label>
+                <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-sm text-muted-foreground hover:border-primary/50 transition-colors">
+                  <Upload className="h-4 w-4 shrink-0" />
+                  <span className="truncate">
+                    {proofFile ? proofFile.name : "Upload image, PDF, or document (max 10 MB)"}
+                  </span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,.txt,.csv"
+                    onChange={(e) => setProofFile(e.target.files?.[0] || null)}
                   />
-                </div>
+                </label>
               </div>
 
-              {/* Stake Amount */}
-              <div className="space-y-2">
-                <Label>Stake Amount (USDC)</Label>
-                <div className="relative">
-                  <Wallet className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    type="number"
-                    min="10"
-                    max="1000"
-                    value={stakeAmount}
-                    onChange={(e) => setStakeAmount(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-                <div className="flex items-start gap-2 text-xs text-muted-foreground mt-1">
-                  <Info className="h-3 w-3 mt-0.5 shrink-0" />
-                  <p>Minimum stake is $20 USDC. Your stake is returned when the claim is verified. If challenged and incorrect, your stake is slashed.</p>
-                </div>
+              <div className="flex items-start gap-2 text-xs text-muted-foreground mt-1">
+                <Info className="h-3 w-3 mt-0.5 shrink-0" />
+                <p>
+                  20 USDC is locked from your Stake deposit. It is returned plus a reward
+                  when the claim finalizes; if a jury rules it incorrect, it is slashed.
+                </p>
               </div>
             </CardContent>
 
             <CardFooter className="flex gap-3">
-              <Button type="submit" disabled={submitting || !selectedDC || !factType || !factData} className="flex-1">
-                {submitting ? "Submitting..." : "Submit Claim"}
-              </Button>
+              {!isConnected ? (
+                <ConnectButton />
+              ) : (
+                <Button
+                  type="submit"
+                  disabled={submitting || isConfirming || !selectedDC || !factType || !factData}
+                  className="flex-1 gap-2"
+                >
+                  {(submitting || isConfirming) && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {submitting ? "Submitting..." : "Submit Claim On-Chain"}
+                </Button>
+              )}
               <Button type="button" variant="outline" onClick={() => router.back()}>
                 Cancel
               </Button>

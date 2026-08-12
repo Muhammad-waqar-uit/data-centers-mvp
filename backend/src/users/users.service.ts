@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -22,6 +22,19 @@ export class UsersService {
 
   async updateProfile(id: string, data: Partial<User>): Promise<User> {
     await this.usersRepo.update(id, data);
+    return this.findById(id);
+  }
+
+  async linkWallet(id: string, walletAddress: string): Promise<User> {
+    if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+      throw new BadRequestException('Invalid wallet address');
+    }
+    const normalized = walletAddress.toLowerCase();
+    const existing = await this.usersRepo.findOne({ where: { walletAddress: normalized } });
+    if (existing && existing.id !== id) {
+      throw new ConflictException('Wallet already linked to another account');
+    }
+    await this.usersRepo.update(id, { walletAddress: normalized });
     return this.findById(id);
   }
 

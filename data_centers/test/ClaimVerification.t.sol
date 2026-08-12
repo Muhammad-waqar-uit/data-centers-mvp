@@ -1,279 +1,307 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {Test, console} from "forge-std/Test.sol";
-import {ClaimVerification} from "../src/ClaimVerification.sol";
+import {Test} from "forge-std/Test.sol";
 import {StakeManager} from "../src/StakeManager.sol";
-import {DataCenterRegistry} from "../src/DataCenterRegistry.sol";
-import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {ClaimVerification} from "../src/ClaimVerification.sol";
+import {JurorCourt} from "../src/JurorCourt.sol";
+import {MockUSDC, MockOOV3} from "./mocks/Mocks.sol";
 
-/// @title MockUSDC - A minimal ERC20 for testing
-contract MockUSDC {
-    string public name = "USD Coin";
-    string public symbol = "USDC";
-    uint8 public decimals = 6;
-    uint256 public totalSupply;
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-        totalSupply += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-        balanceOf[from] -= amount;
-        allowance[from][msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
-
+/// @title ClaimVerificationTest
+/// @notice Covers the decentralized contribution & verification flow:
+/// submit -> attest (UMA OOV3 assertion) -> settle happy path,
+/// and submit -> attest -> challenge -> JurorCourt resolution.
 contract ClaimVerificationTest is Test {
-    ClaimVerification public claimVerification;
-    StakeManager public stakeManager;
-    DataCenterRegistry public registry;
-    MockUSDC public usdc;
+    MockUSDC usdc;
+    MockOOV3 oov3;
+    StakeManager stakeManager;
+    ClaimVerification cv;
+    JurorCourt court;
 
-    address public deployer = address(1);
-    address public contributor = address(2);
-    address public verifier = address(3);
-    address public challenger = address(4);
+    address owner;
+    address claimer;
+    address verifier;
+    address challenger;
+    address[3] jurors;
 
-    uint256 constant USDC = 1e6; // 1 USDC
+    uint256 constant DEPOSIT = 1_000e6;
 
     function setUp() public {
-        // Deploy mock USDC
+        owner = address(this);
+        claimer = makeAddr("claimer");
+        verifier = makeAddr("verifier");
+        challenger = makeAddr("challenger");
+        for (uint256 i = 0; i < 3; i++) {
+            jurors[i] = makeAddr(string(abi.encodePacked("juror", vm.toString(i))));
+        }
+
         usdc = new MockUSDC();
-
-        // Deploy StakeManager
+        oov3 = new MockOOV3(address(usdc));
         stakeManager = new StakeManager(address(usdc));
+        cv = new ClaimVerification(address(stakeManager), address(oov3));
+        court = new JurorCourt(address(stakeManager));
 
-        // Deploy ClaimVerification
-        claimVerification = new ClaimVerification(address(stakeManager));
+        // Wire authorizations
+        stakeManager.authorizeContract(address(cv));
+        stakeManager.authorizeContract(address(court));
+        cv.setCourt(address(court));
+        court.setClaimVerification(address(cv));
 
-        // Deploy DataCenterRegistry
-        registry = new DataCenterRegistry();
+        // Fund users
+        _fund(claimer, DEPOSIT);
+        _fund(verifier, DEPOSIT);
+        _fund(challenger, DEPOSIT);
 
-        // Authorize ClaimVerification on StakeManager
-        stakeManager.authorizeContract(address(claimVerification));
+        // Fund treasury for reward payouts
+        usdc.mint(owner, 1_000e6);
+        usdc.approve(address(stakeManager), 1_000e6);
+        stakeManager.fundTreasury(1_000e6);
 
-        // Fund accounts
-        usdc.mint(contributor, 1000 * USDC);
-        usdc.mint(verifier, 10000 * USDC);
-        usdc.mint(challenger, 10000 * USDC);
-
-        // Fund StakeManager treasury for rewards
-        usdc.mint(address(stakeManager), 100000 * USDC);
-
-        // Approve StakeManager to spend USDC
-        vm.prank(contributor);
-        usdc.approve(address(stakeManager), type(uint256).max);
-        vm.prank(verifier);
-        usdc.approve(address(stakeManager), type(uint256).max);
-        vm.prank(challenger);
-        usdc.approve(address(stakeManager), type(uint256).max);
-
-        // Deposit into StakeManager
-        vm.prank(contributor);
-        stakeManager.deposit(500 * USDC);
-        vm.prank(verifier);
-        stakeManager.deposit(5000 * USDC);
-        vm.prank(challenger);
-        stakeManager.deposit(5000 * USDC);
+        // Register 3 jurors so disputes can be created
+        for (uint256 i = 0; i < 3; i++) {
+            _fund(jurors[i], 500e6);
+            vm.prank(jurors[i]);
+            court.registerJuror(100e6);
+        }
     }
+
+    function _fund(address user, uint256 amount) internal {
+        usdc.mint(user, amount);
+        vm.prank(user);
+        usdc.approve(address(stakeManager), amount);
+        vm.prank(user);
+        stakeManager.deposit(amount);
+    }
+
+    function _submitClaim() internal returns (uint256) {
+        vm.prank(claimer);
+        return cv.submitClaim(1, ClaimVerification.FactType.GRID_STATUS, "operating", keccak256("proof"));
+    }
+
+    function _attest(uint256 claimId) internal {
+        vm.prank(verifier);
+        cv.attestClaim(claimId);
+    }
+
+    // ─── Submission ─────────────────────────────────────────────
 
     function test_SubmitClaim() public {
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "Queue position: 412, Status: Active",
-            keccak256("proof-doc-hash")
-        );
+        uint256 claimId = _submitClaim();
 
-        assertEq(claimId, 1);
-
-        ClaimVerification.Claim memory claim = claimVerification.getClaim(claimId);
-        assertEq(claim.claimer, contributor);
-        assertEq(uint8(claim.factType), uint8(ClaimVerification.FactType.GRID_STATUS));
-        assertEq(uint8(claim.status), uint8(ClaimVerification.ClaimStatus.PENDING));
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(c.id, claimId);
+        assertEq(c.claimer, claimer);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.PENDING));
+        assertEq(stakeManager.getLockedBalance(claimer), 20e6);
     }
 
+    function test_SubmitClaim_RevertsOnEmptyFactData() public {
+        vm.prank(claimer);
+        vm.expectRevert("ClaimVerification: empty fact data");
+        cv.submitClaim(1, ClaimVerification.FactType.GRID_STATUS, "", keccak256("proof"));
+    }
+
+    // ─── Attestation ────────────────────────────────────────────
+
     function test_AttestClaim() public {
-        // Submit claim
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.OWNERSHIP,
-            "Owner: Digital Realty Trust",
-            keccak256("proof")
-        );
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
 
-        // Attest
-        vm.prank(verifier);
-        claimVerification.attestClaim(claimId);
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.ATTESTED));
+        assertTrue(c.assertionId != bytes32(0));
+        assertEq(c.challengeWindowEnd, block.timestamp + 7 days);
 
-        ClaimVerification.Claim memory claim = claimVerification.getClaim(claimId);
-        assertEq(uint8(claim.status), uint8(ClaimVerification.ClaimStatus.ATTESTED));
+        // Verifier stake locked (200) + OOV3 bond pulled from deposit (400)
+        assertEq(stakeManager.getLockedBalance(verifier), 200e6);
+        assertEq(stakeManager.depositedBalances(verifier), DEPOSIT - 400e6);
 
-        ClaimVerification.Attestation memory att = claimVerification.getAttestation(claimId);
+        ClaimVerification.Attestation memory att = cv.getAttestation(claimId);
         assertEq(att.verifier, verifier);
     }
 
     function test_CannotSelfAttest() public {
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "data",
-            keccak256("proof")
-        );
-
-        vm.prank(contributor);
+        uint256 claimId = _submitClaim();
+        vm.prank(claimer);
         vm.expectRevert("ClaimVerification: cannot self-attest");
-        claimVerification.attestClaim(claimId);
+        cv.attestClaim(claimId);
     }
+
+    // ─── Settlement (optimistic happy path) ─────────────────────
+
+    function test_CannotSettleBeforeWindowCloses() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
+
+        vm.expectRevert("ClaimVerification: window still open");
+        cv.settleClaim(claimId);
+    }
+
+    function test_SettleClaim_HappyPath() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
+
+        vm.warp(block.timestamp + 7 days + 1);
+        cv.settleClaim(claimId);
+
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.FINALIZED));
+
+        // UMA assertion settled as true
+        assertTrue(oov3.getAssertion(c.assertionId).settled);
+        assertTrue(oov3.getAssertion(c.assertionId).settlementResolution);
+
+        // Contributor: stake released + 50% reward
+        assertEq(stakeManager.getLockedBalance(claimer), 0);
+        assertEq(stakeManager.depositedBalances(claimer), DEPOSIT + 10e6);
+
+        // Verifier: stake released + 25% reward (bond already went to OOV3)
+        assertEq(stakeManager.getLockedBalance(verifier), 0);
+        assertEq(stakeManager.depositedBalances(verifier), DEPOSIT - 400e6 + 50e6);
+    }
+
+    function test_SettleClaim_RevertsIfAssertionResolvedFalse() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
+
+        vm.warp(block.timestamp + 7 days + 1);
+        oov3.setSettleResolution(false);
+
+        vm.expectRevert("ClaimVerification: assertion resolved false");
+        cv.settleClaim(claimId);
+    }
+
+    // ─── Challenge + Court resolution ───────────────────────────
 
     function test_ChallengeClaim() public {
-        // Submit
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "data",
-            keccak256("proof")
-        );
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
 
-        // Attest
-        vm.prank(verifier);
-        claimVerification.attestClaim(claimId);
-
-        // Challenge
         vm.prank(challenger);
-        claimVerification.challengeClaim(claimId, "Data is outdated");
+        cv.challengeClaim(claimId, "evidence is forged");
 
-        ClaimVerification.Claim memory claim = claimVerification.getClaim(claimId);
-        assertEq(uint8(claim.status), uint8(ClaimVerification.ClaimStatus.CHALLENGED));
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.CHALLENGED));
+        assertEq(stakeManager.getLockedBalance(challenger), 300e6);
+
+        uint256 disputeId = cv.claimToDispute(claimId);
+        JurorCourt.Dispute memory d = court.getDispute(disputeId);
+        assertEq(d.claimId, claimId);
+        assertEq(uint8(d.status), uint8(JurorCourt.DisputeStatus.ACTIVE));
+        assertEq(court.getDrawnJurors(disputeId).length, 3);
     }
 
-    function test_FinalizeClaim_AfterChallengeWindow() public {
-        // Submit
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "data",
-            keccak256("proof")
-        );
+    function test_CannotChallengeAfterWindow() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
 
-        // Attest
-        vm.prank(verifier);
-        claimVerification.attestClaim(claimId);
-
-        // Warp past challenge window (7 days + 1 second)
         vm.warp(block.timestamp + 7 days + 1);
-
-        // Finalize
-        claimVerification.finalizeClaim(claimId);
-
-        ClaimVerification.Claim memory claim = claimVerification.getClaim(claimId);
-        assertEq(uint8(claim.status), uint8(ClaimVerification.ClaimStatus.FINALIZED));
+        vm.prank(challenger);
+        vm.expectRevert("ClaimVerification: challenge window closed");
+        cv.challengeClaim(claimId, "too late");
     }
 
-    function test_CannotFinalizeBeforeWindowCloses() public {
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "data",
-            keccak256("proof")
-        );
-
-        vm.prank(verifier);
-        claimVerification.attestClaim(claimId);
-
-        // Try finalize before window closes
-        vm.expectRevert("ClaimVerification: window still open");
-        claimVerification.finalizeClaim(claimId);
-    }
-
-    function test_ResolveDispute_ClaimCorrect() public {
-        // Submit + Attest + Challenge
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "data",
-            keccak256("proof")
-        );
-
-        vm.prank(verifier);
-        claimVerification.attestClaim(claimId);
+    function test_CourtRuling_ClaimIncorrect() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
 
         vm.prank(challenger);
-        claimVerification.challengeClaim(claimId, "Wrong data");
+        cv.challengeClaim(claimId, "evidence is forged");
+        uint256 disputeId = cv.claimToDispute(claimId);
 
-        // Resolve: claim is correct (challenger loses)
-        claimVerification.resolveDispute(claimId, true);
+        // 2 of 3 drawn jurors vote against the claim -> majority
+        address[] memory drawn = court.getDrawnJurors(disputeId);
+        uint256 votes = 0;
+        for (uint256 i = 0; i < drawn.length && votes < 2; i++) {
+            vm.prank(drawn[i]);
+            court.vote(disputeId, false);
+            votes++;
+        }
 
-        ClaimVerification.Claim memory claim = claimVerification.getClaim(claimId);
-        assertEq(uint8(claim.status), uint8(ClaimVerification.ClaimStatus.FINALIZED));
+        vm.warp(block.timestamp + 24 hours + 1);
+        court.resolve(disputeId);
+
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.REJECTED));
+
+        // Challenger receives slashed claimer (20) + verifier (200) stakes, own 300 released
+        assertEq(stakeManager.getLockedBalance(challenger), 0);
+        assertEq(stakeManager.depositedBalances(challenger), DEPOSIT + 20e6 + 200e6);
+
+        // Claimer & verifier fully slashed
+        assertEq(stakeManager.depositedBalances(claimer), DEPOSIT - 20e6);
+        assertEq(stakeManager.depositedBalances(verifier), DEPOSIT - 200e6 - 400e6);
+
+        // Majority jurors rewarded from treasury (30 / 2 = 15 each);
+        // juror registration stake stays locked, deposit accounting unchanged
+        assertEq(stakeManager.depositedBalances(drawn[0]), 500e6 + 15e6);
+        assertEq(stakeManager.depositedBalances(drawn[1]), 500e6 + 15e6);
     }
 
-    function test_ResolveDispute_ClaimIncorrect() public {
-        // Submit + Attest + Challenge
-        vm.prank(contributor);
-        uint256 claimId = claimVerification.submitClaim(
-            1,
-            ClaimVerification.FactType.GRID_STATUS,
-            "data",
-            keccak256("proof")
-        );
-
-        vm.prank(verifier);
-        claimVerification.attestClaim(claimId);
+    function test_CourtRuling_ClaimCorrect() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
 
         vm.prank(challenger);
-        claimVerification.challengeClaim(claimId, "Wrong data");
+        cv.challengeClaim(claimId, "bad faith challenge");
+        uint256 disputeId = cv.claimToDispute(claimId);
 
-        // Resolve: claim is incorrect (claimer/verifier lose)
-        claimVerification.resolveDispute(claimId, false);
+        // All drawn jurors vote for the claim
+        address[] memory drawn = court.getDrawnJurors(disputeId);
+        for (uint256 i = 0; i < drawn.length; i++) {
+            vm.prank(drawn[i]);
+            court.vote(disputeId, true);
+        }
 
-        ClaimVerification.Claim memory claim = claimVerification.getClaim(claimId);
-        assertEq(uint8(claim.status), uint8(ClaimVerification.ClaimStatus.REJECTED));
+        vm.warp(block.timestamp + 24 hours + 1);
+        court.resolve(disputeId);
+
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.FINALIZED));
+
+        // Challenger slashed 300 to claimer
+        assertEq(stakeManager.depositedBalances(claimer), DEPOSIT + 300e6);
+        assertEq(stakeManager.depositedBalances(challenger), DEPOSIT - 300e6);
+
+        // Verifier stake released
+        assertEq(stakeManager.getLockedBalance(verifier), 0);
     }
+
+    // ─── UMA OOV3 permissionless dispute path ───────────────────
+
+    function test_UmaDisputeRoutesToCourt() public {
+        uint256 claimId = _submitClaim();
+        _attest(claimId);
+        bytes32 assertionId = cv.getClaim(claimId).assertionId;
+
+        // Third party disputes the assertion directly on OOV3
+        oov3.disputeAssertion(assertionId, challenger);
+
+        ClaimVerification.Claim memory c = cv.getClaim(claimId);
+        assertEq(uint8(c.status), uint8(ClaimVerification.ClaimStatus.CHALLENGED));
+
+        uint256 disputeId = cv.claimToDispute(claimId);
+        JurorCourt.Dispute memory d = court.getDispute(disputeId);
+        assertEq(d.challenger, challenger);
+        assertEq(uint8(d.status), uint8(JurorCourt.DisputeStatus.ACTIVE));
+    }
+
+    // ─── Views ──────────────────────────────────────────────────
 
     function test_GetUserClaims() public {
-        vm.startPrank(contributor);
-        claimVerification.submitClaim(1, ClaimVerification.FactType.GRID_STATUS, "data1", keccak256("p1"));
-        claimVerification.submitClaim(2, ClaimVerification.FactType.OWNERSHIP, "data2", keccak256("p2"));
-        vm.stopPrank();
+        uint256 id1 = _submitClaim();
+        uint256 id2 = _submitClaim();
 
-        uint256[] memory userClaimIds = claimVerification.getUserClaims(contributor);
-        assertEq(userClaimIds.length, 2);
-        assertEq(userClaimIds[0], 1);
-        assertEq(userClaimIds[1], 2);
+        uint256[] memory ids = cv.getUserClaims(claimer);
+        assertEq(ids.length, 2);
+        assertEq(ids[0], id1);
+        assertEq(ids[1], id2);
     }
 
     function test_TotalClaims() public {
-        vm.prank(contributor);
-        claimVerification.submitClaim(1, ClaimVerification.FactType.GRID_STATUS, "data", keccak256("p"));
-
-        assertEq(claimVerification.getTotalClaims(), 1);
+        assertEq(cv.getTotalClaims(), 0);
+        _submitClaim();
+        _submitClaim();
+        assertEq(cv.getTotalClaims(), 2);
     }
 }

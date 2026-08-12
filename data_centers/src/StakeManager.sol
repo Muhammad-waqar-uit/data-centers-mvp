@@ -123,6 +123,18 @@ contract StakeManager {
         emit Rewarded(user, amount, referenceId);
     }
 
+    /// @notice Move USDC from a user's available deposit balance directly to another address.
+    /// @dev Used by ClaimVerification to pull UMA OOV3 assertion bonds from the verifier's deposit.
+    function transferFromDeposit(address from, address to, uint256 amount) external onlyAuthorized {
+        uint256 available = depositedBalances[from] - lockedBalances[from];
+        require(available >= amount, "StakeManager: insufficient available balance");
+
+        depositedBalances[from] -= amount;
+        totalDeposited -= amount;
+
+        require(usdc.transfer(to, amount), "StakeManager: transfer failed");
+    }
+
     // ─── Views ──────────────────────────────────────────────────
 
     function getAvailableBalance(address user) external view returns (uint256) {

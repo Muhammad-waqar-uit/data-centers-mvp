@@ -3,15 +3,29 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { useReadContract } from "wagmi";
+import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, FileText, Clock, ExternalLink } from "lucide-react";
+import { Plus, FileText, Clock, ExternalLink, Loader2, CheckCircle2 } from "lucide-react";
 import { claimsApi } from "@/lib/api";
 import { formatAddress } from "@/lib/utils";
+import { claimVerificationAbi } from "@/lib/abis";
+import { CONTRACTS } from "@/lib/contracts";
+import { useClaims } from "@/hooks/useClaims";
+import { ClaimStatusTimeline, type TimelineStatus } from "@/components/claims/status-timeline";
 import type { Claim } from "@/types";
+
+const ON_CHAIN_TO_LOCAL: Record<number, string> = {
+  0: "pending",
+  1: "attested",
+  2: "challenged",
+  3: "finalized",
+  4: "rejected",
+};
 
 export default function MyClaimsPage() {
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -22,15 +36,12 @@ export default function MyClaimsPage() {
   }, []);
 
   async function loadClaims() {
+    setLoading(true);
     try {
       const res = await claimsApi.my();
       setClaims(res.data.data || res.data);
     } catch {
-      setClaims([
-        { id: "c1", dataCenterId: "1", claimerId: "u1", factType: "GRID_STATUS", factData: "Connected to PJM Interconnection", proofDocumentUrl: null, proofHash: null, stakeAmount: 50, status: "finalized", txHash: "0xabc123def456", onChainClaimId: 1, verifierId: "u2", verifierWallet: "0x123...", verifierStakeAmount: 200, attestedAt: "2024-02-10", challengeWindowEnd: "2024-02-17", challengerId: null, challengeReason: null, challengedAt: null, createdAt: "2024-02-08" },
-        { id: "c2", dataCenterId: "2", claimerId: "u1", factType: "OWNERSHIP", factData: "Owned by Google LLC", proofDocumentUrl: null, proofHash: null, stakeAmount: 30, status: "attested", txHash: "0xdef789ghi012", onChainClaimId: 2, verifierId: "u3", verifierWallet: "0x456...", verifierStakeAmount: 300, attestedAt: "2024-03-05", challengeWindowEnd: "2024-03-12", challengerId: null, challengeReason: null, challengedAt: null, createdAt: "2024-03-01" },
-        { id: "c3", dataCenterId: "3", claimerId: "u1", factType: "POWER_CAPACITY", factData: "150 MW planned capacity", proofDocumentUrl: null, proofHash: null, stakeAmount: 40, status: "pending", txHash: null, onChainClaimId: null, verifierId: null, verifierWallet: null, verifierStakeAmount: null, attestedAt: null, challengeWindowEnd: null, challengerId: null, challengeReason: null, challengedAt: null, createdAt: "2024-03-15" },
-      ]);
+      setClaims([]);
     } finally {
       setLoading(false);
     }
@@ -51,7 +62,7 @@ export default function MyClaimsPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">My Claims</h1>
-          <p className="text-sm text-muted-foreground">Track your submitted claims and their verification status</p>
+          <p className="text-sm text-muted-foreground">Track your submitted claims and their on-chain verification status</p>
         </div>
         <Link href="/claims/submit">
           <Button className="gap-2"><Plus className="h-4 w-4" /> New Claim</Button>
@@ -91,7 +102,7 @@ function ClaimsList({ claims, loading, statusVariant }: { claims: Claim[]; loadi
   if (loading) {
     return (
       <div className="space-y-3 mt-4">
-        {[1, 2, 3].map((i) => <Skeleton key={i} className="h-28 w-full" />)}
+        {[1, 2, 3].map((i) => <Skeleton key={i} className="h-36 w-full" />)}
       </div>
     );
   }
@@ -112,35 +123,96 @@ function ClaimsList({ claims, loading, statusVariant }: { claims: Claim[]; loadi
     <div className="space-y-3 mt-4">
       {claims.map((claim, i) => (
         <motion.div key={claim.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-          <Card className="transition-all hover:border-primary/30">
-            <CardContent className="pt-4">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <Badge variant={statusVariant(claim.status)}>{claim.status}</Badge>
-                  <span className="text-sm font-medium">{claim.factType.replace(/_/g, " ")}</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(claim.createdAt).toLocaleDateString()}
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">{claim.factData}</p>
-              <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1"><FileText className="h-3 w-3" /> Stake: ${claim.stakeAmount}</span>
-                {claim.txHash && (
-                  <span className="font-mono flex items-center gap-1">
-                    <ExternalLink className="h-3 w-3" /> {formatAddress(claim.txHash)}
-                  </span>
-                )}
-                {claim.challengeWindowEnd && claim.status === "attested" && (
-                  <span className="flex items-center gap-1 text-amber-400">
-                    <Clock className="h-3 w-3" /> Window closes {new Date(claim.challengeWindowEnd).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+          <ClaimCard claim={claim} statusVariant={statusVariant} />
         </motion.div>
       ))}
     </div>
+  );
+}
+
+type OnChainClaim = {
+  id: bigint;
+  status: number;
+  challengeWindowEnd: bigint;
+};
+
+function ClaimCard({ claim, statusVariant }: { claim: Claim; statusVariant: (s: string) => "default" | "success" | "warning" | "danger" }) {
+  const { settleClaim, isConfirming } = useClaims();
+  const [settling, setSettling] = useState(false);
+
+  // Live on-chain status (polled every 10s)
+  const { data: onChain } = useReadContract({
+    address: CONTRACTS.claimVerification,
+    abi: claimVerificationAbi,
+    functionName: "getClaim",
+    args: claim.onChainClaimId ? [BigInt(claim.onChainClaimId)] : undefined,
+    query: { enabled: !!claim.onChainClaimId && !!CONTRACTS.claimVerification, refetchInterval: 10_000 },
+  });
+
+  const oc = onChain as OnChainClaim | undefined;
+  const liveStatus = oc ? ON_CHAIN_TO_LOCAL[oc.status] ?? claim.status : claim.status;
+  const windowClosed = oc ? BigInt(Math.floor(Date.now() / 1000)) >= oc.challengeWindowEnd : false;
+  const canSettle = liveStatus === "attested" && windowClosed;
+
+  async function handleSettle() {
+    if (!claim.onChainClaimId) return;
+    setSettling(true);
+    try {
+      await settleClaim(BigInt(claim.onChainClaimId));
+      toast.success("Claim settled — stakes released");
+    } catch {
+      // toast handled by hook
+    } finally {
+      setSettling(false);
+    }
+  }
+
+  return (
+    <Card className="transition-all hover:border-primary/30">
+      <CardContent className="pt-4">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <Badge variant={statusVariant(liveStatus)}>
+              {liveStatus}
+              {oc && liveStatus !== claim.status && " (on-chain)"}
+            </Badge>
+            <span className="text-sm font-medium">{claim.factType.replace(/_/g, " ")}</span>
+            {claim.onChainClaimId && (
+              <span className="text-xs text-muted-foreground">#{claim.onChainClaimId}</span>
+            )}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {new Date(claim.createdAt).toLocaleDateString()}
+          </span>
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">{claim.factData}</p>
+
+        {/* Status timeline */}
+        <div className="mt-4 max-w-md">
+          <ClaimStatusTimeline status={(liveStatus as TimelineStatus) || "pending"} />
+        </div>
+
+        <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1"><FileText className="h-3 w-3" /> Stake: ${claim.stakeAmount}</span>
+          {claim.txHash && (
+            <span className="font-mono flex items-center gap-1">
+              <ExternalLink className="h-3 w-3" /> {formatAddress(claim.txHash)}
+            </span>
+          )}
+          {oc && liveStatus === "attested" && (
+            <span className="flex items-center gap-1 text-amber-400">
+              <Clock className="h-3 w-3" /> Window closes{" "}
+              {new Date(Number(oc.challengeWindowEnd) * 1000).toLocaleDateString()}
+            </span>
+          )}
+          {canSettle && (
+            <Button size="sm" onClick={handleSettle} disabled={settling || isConfirming} className="gap-2 h-7">
+              {(settling || isConfirming) && <Loader2 className="h-3 w-3 animate-spin" />}
+              <CheckCircle2 className="h-3 w-3" /> Settle & Claim Rewards
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

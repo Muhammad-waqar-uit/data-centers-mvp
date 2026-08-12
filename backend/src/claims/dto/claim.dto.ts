@@ -24,6 +24,16 @@ export class SubmitClaimDto {
   @IsOptional()
   @IsString()
   proofHash?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  onChainClaimId?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  txHash?: string;
 }
 
 export class AttestClaimDto {
@@ -31,6 +41,16 @@ export class AttestClaimDto {
   @IsOptional()
   @IsString()
   verifierWallet?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  txHash?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  assertionId?: string;
 }
 
 export class ChallengeClaimDto {
@@ -42,6 +62,16 @@ export class ChallengeClaimDto {
   @IsOptional()
   @IsString()
   challengerWallet?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  txHash?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  onChainDisputeId?: number;
 }
 
 export class QueryClaimsDto {

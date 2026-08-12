@@ -4,6 +4,7 @@ import { Bell, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
+import { WalletWidget } from "@/components/layout/wallet-widget";
 import Link from "next/link";
 
 interface HeaderProps {
@@ -18,6 +19,9 @@ export function Header({ title }: HeaderProps) {
       )}
 
       <div className="flex-1" />
+
+      {/* Wallet connect + USDC deposit balance */}
+      <WalletWidget />
 
       {/* Search */}
       <div className="relative hidden md:block w-64">

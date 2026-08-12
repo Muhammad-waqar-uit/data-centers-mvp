@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Body, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Put, Patch, Body, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -20,5 +20,12 @@ export class UsersController {
   @ApiBearerAuth()
   updateProfile(@Request() req, @Body() data: any) {
     return this.usersService.updateProfile(req.user.sub, data);
+  }
+
+  @Patch('me/wallet')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  linkWallet(@Request() req, @Body() body: { walletAddress: string }) {
+    return this.usersService.linkWallet(req.user.sub, body.walletAddress);
   }
 }

@@ -48,7 +48,7 @@ export default function LandingPage() {
           >
             <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-secondary/50 px-4 py-1.5 text-sm text-muted-foreground">
               <Zap className="h-3.5 w-3.5 text-amber-400" />
-              Tracking $1T+ in global data center capex
+              Decentralized verification on Sepolia — powered by UMA &amp; juror courts
             </div>
 
             <h1 className="mx-auto max-w-4xl text-5xl font-bold leading-tight tracking-tight md:text-7xl">
@@ -59,8 +59,9 @@ export default function LandingPage() {
             </h1>
 
             <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground leading-relaxed">
-              Map, verify, and invest in data centers worldwide. Crowdsourced data from
-              local experts, verified on-chain, accessible to everyone.
+              Contribute data center facts with USDC stakes on-chain. Verifiers attest via
+              UMA&apos;s Optimistic Oracle, disputes are decided by randomly drawn juror
+              panels — no admins, fully decentralized.
             </p>
 
             <div className="mt-10 flex items-center justify-center gap-4">
@@ -118,13 +119,13 @@ export default function LandingPage() {
               },
               {
                 icon: Shield,
-                title: "Verified Claims",
-                desc: "Contributors submit data with proof documents. Verifiers attest accuracy. Challenges resolve via on-chain arbitration.",
+                title: "Optimistic Verification",
+                desc: "Contributors stake 20 USDC to submit facts; verifiers stake 200 USDC and assert truth on UMA OOV3. No dispute in 7 days — the claim settles itself.",
               },
               {
                 icon: Globe,
-                title: "Earn Rewards",
-                desc: "Get paid in USDC for verified data contributions. The more accurate your submissions, the higher your reputation score.",
+                title: "Jury Disputes & Rewards",
+                desc: "Challenges go to a randomly drawn panel of staked jurors. Majority voters earn USDC rewards; minority voters get slashed. Earn for accurate data.",
               },
             ].map((feature) => (
               <motion.div

@@ -58,12 +58,30 @@ export const claimsApi = {
   get: (id: string) => api.get(`/claims/${id}`),
   my: () => api.get("/claims/my"),
   pending: () => api.get("/claims/pending"),
-  submit: (data: { dataCenterId: string; factType: string; factData: string; proofDocumentUrl?: string; proofHash?: string }) =>
-    api.post("/claims", data),
+  submit: (data: {
+    dataCenterId: string;
+    factType: string;
+    factData: string;
+    proofDocumentUrl?: string;
+    proofHash?: string;
+    onChainClaimId?: number;
+    txHash?: string;
+  }) => api.post("/claims", data),
   attest: (id: string, data?: { verifierWallet?: string }) =>
     api.post(`/claims/${id}/attest`, data),
   challenge: (id: string, data: { reason: string; challengerWallet?: string }) =>
     api.post(`/claims/${id}/challenge`, data),
+};
+
+// ─── Uploads ──────────────────────────────────
+export const uploadsApi = {
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post("/uploads", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+  },
 };
 
 // ─── Disputes ───────────────────────────────────────

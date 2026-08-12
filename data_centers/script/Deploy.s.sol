@@ -5,18 +5,22 @@ import {Script, console} from "forge-std/Script.sol";
 import {DataCenterRegistry} from "../src/DataCenterRegistry.sol";
 import {StakeManager} from "../src/StakeManager.sol";
 import {ClaimVerification} from "../src/ClaimVerification.sol";
+import {JurorCourt} from "../src/JurorCourt.sol";
 
 /// @title Deploy
-/// @notice Deploys DataCenterRegistry, StakeManager, and ClaimVerification contracts
+/// @notice Deploys DataCenterRegistry, StakeManager, JurorCourt, and ClaimVerification,
+/// then wires up authorizations and UMA OOV3 integration.
 contract Deploy is Script {
     function run() external {
         // Read env vars
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address usdcAddress = vm.envAddress("USDC_ADDRESS");
+        address oov3Address = vm.envAddress("OOV3_ADDRESS");
 
         console.log("Deploying contracts...");
         console.log("Deployer:", vm.addr(deployerPrivateKey));
         console.log("USDC Address:", usdcAddress);
+        console.log("UMA OOV3 Address:", oov3Address);
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -28,15 +32,28 @@ contract Deploy is Script {
         StakeManager stakeManager = new StakeManager(usdcAddress);
         console.log("StakeManager deployed at:", address(stakeManager));
 
-        // 3. Deploy ClaimVerification
-        ClaimVerification claimVerification = new ClaimVerification(address(stakeManager));
+        // 3. Deploy JurorCourt
+        JurorCourt court = new JurorCourt(address(stakeManager));
+        console.log("JurorCourt deployed at:", address(court));
+
+        // 4. Deploy ClaimVerification (UMA OOV3 integrated)
+        ClaimVerification claimVerification = new ClaimVerification(address(stakeManager), oov3Address);
         console.log("ClaimVerification deployed at:", address(claimVerification));
 
-        // 4. Link contracts: authorize ClaimVerification on StakeManager
+        // 5. Wire contracts together
         stakeManager.authorizeContract(address(claimVerification));
         console.log("ClaimVerification authorized on StakeManager");
 
-        // 5. Authorize deployer as registrar on DataCenterRegistry
+        stakeManager.authorizeContract(address(court));
+        console.log("JurorCourt authorized on StakeManager");
+
+        claimVerification.setCourt(address(court));
+        console.log("JurorCourt set on ClaimVerification");
+
+        court.setClaimVerification(address(claimVerification));
+        console.log("ClaimVerification set on JurorCourt");
+
+        // 6. Authorize deployer as registrar on DataCenterRegistry
         registry.addRegistrar(vm.addr(deployerPrivateKey));
         console.log("Deployer authorized as registrar");
 
@@ -47,7 +64,9 @@ contract Deploy is Script {
             '{"DataCenterRegistry":"', vm.toString(address(registry)),
             '","StakeManager":"', vm.toString(address(stakeManager)),
             '","ClaimVerification":"', vm.toString(address(claimVerification)),
+            '","JurorCourt":"', vm.toString(address(court)),
             '","USDC":"', vm.toString(usdcAddress),
+            '","OOV3":"', vm.toString(oov3Address),
             '"}'
         );
 
