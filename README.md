@@ -1,8 +1,10 @@
 # DataPulse — Data Center Intelligence Platform
 
-Contribute data center facts with USDC stakes on-chain. Verifiers attest via UMA's Optimistic Oracle V3, disputes are decided by randomly drawn juror panels — no admins, fully decentralized.
+Contribute data center facts with USDC stakes on-chain. Verifiers attest via UMA's Optimistic Oracle V3, and challenged claims go to randomly drawn juror panels. Claim decisions are permissionless; contract owners can still update configuration.
 
 > **Getting started?** See [SETUP_GUIDE.md](./SETUP_GUIDE.md) for step-by-step setup, testing, and deployment instructions.
+
+For the current MVP boundaries, component map, claim lifecycle, and testnet limitations, see [Project Scope & Architecture](./docs/PROJECT_SCOPE.md).
 
 ## Architecture
 
